@@ -1,9 +1,12 @@
+import signal
+import threading
+import time
 from twitchio.ext import commands
 from auth import Auth
 from channel_rewards import ChannelRewards
-from pubsub import PubSubHandler
-from pubsub import PubSubReturn
+from pubsub import PubSubHandler, PubSubReturn
 from utils.language import MessageTranslator
+from utils.supermetroid import SuperMetroid
 
 class Bot(commands.Bot):
     
@@ -25,6 +28,21 @@ class Bot(commands.Bot):
         self.rewards = ChannelRewards()
         self.pubsub = PubSubHandler(self, self.auth, self.initial_channels)
         self.translator = MessageTranslator()
+        self.sm = SuperMetroid()
+        self.sm.start_game_info_update(0.2)
+        
+        self.sm.subscribe_for_run_start(self.run_started)
+        self.sm.subscribe_for_enter_phantoon(self.enter_phantoon)
+        self.sm.subscribe_for_enter_moat(self.enter_moat)
+        
+    def run_started(self):
+        print('Good luck, have fun!')
+        
+    def enter_phantoon(self):
+        print('Phantoon started!')
+        
+    def enter_moat(self):
+        print('Entered moat!')
         
     async def event_ready(self):
         print('Connected!')
@@ -53,6 +71,9 @@ class Bot(commands.Bot):
     @commands.command(name='nou')
     async def my_command(self, ctx):
         await ctx.send('NO U')
-                
+
+# make Ctrl-C actually kill the process
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 bot = Bot()
 bot.run()

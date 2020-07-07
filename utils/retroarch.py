@@ -32,10 +32,16 @@ class RetroarchReader():
         
         pid = self.get_retroarch_process()
         
+        if pid == -1:
+            return False
+        
         access_flags = win32con.PROCESS_ALL_ACCESS
         self.open_handle = windll.kernel32.OpenProcess(access_flags, False, pid)
         
         libretro_wram = self.get_snes9x_libretro_wram_address(pid)
+        
+        if 0 == libretro_wram:
+            return False
         
         wram_ptr = c_ulonglong()
         bytesRead = c_ulonglong()
@@ -45,9 +51,11 @@ class RetroarchReader():
         if r == 0:
             print("Failed to get WRam address")
             self.close_process()
-            return
+            return False
 
         self.wram_address = wram_ptr.value
+        
+        return True
         
     def close_process(self):
         assert 0 != self.open_handle, "Process isn't opened"
@@ -55,12 +63,6 @@ class RetroarchReader():
         windll.kernel32.CloseHandle(self.open_handle)
         self.open_handle = 0
         self.wram_address = 0
-        
-    def get_base_address(self):
-        assert 0 != self.open_handle, "Process isn't opened"
-        
-        modules = windll.psapi.EnumProcessModules(self.open_handle)
-        return modules[0]
         
     def get_retroarch_process(self):
         pids = psutil.pids()
@@ -102,12 +104,12 @@ class RetroarchReader():
         wram_offset = 0x2C9B08
         return mod_base_address + wram_offset
         
-    def get_current_room_id(self):
+    def read_short(self, wram_addr):
         assert 0 != self.open_handle, "Process isn't opened"
         
-        room_id = c_ushort()
+        out_val = c_ushort()
         bytesRead = c_ulonglong()
         
-        r = windll.kernel32.ReadProcessMemory(self.open_handle, self.wram_address + 0x79b, byref(room_id), sizeof(room_id), byref(bytesRead))
+        r = windll.kernel32.ReadProcessMemory(self.open_handle, self.wram_address + wram_addr, byref(out_val), sizeof(out_val), byref(bytesRead))
         
-        return room_id.value
+        return out_val.value
