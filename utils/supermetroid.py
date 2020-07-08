@@ -3,7 +3,7 @@ import time
 import collections
 from utils.retroarch import RetroarchReader
 
-# Rom addresses from https://jathys.zophar.net/supermetroid/kejardon/RAMMap.txt
+# Ram addresses from https://jathys.zophar.net/supermetroid/kejardon/RAMMap.txt
 
 class SuperMetroid():
     def __init__(self):
@@ -15,6 +15,7 @@ class SuperMetroid():
         self.__update_rate = 1.0
         
         self.__callback_run_started = None
+        self.__callback_run_reset = None
         # TODO: more generic way to subscribe to any room
         self.__callback_enter_moat = None
         self.__callback_enter_phantoon = None
@@ -44,6 +45,9 @@ class SuperMetroid():
     def subscribe_for_run_start(self, in_callback):
         self.__callback_run_started = in_callback
         
+    def subscribe_for_run_reset(self, in_callback):
+        self.__callback_run_reset = in_callback
+        
     def subscribe_for_enter_moat(self, in_callback):
         self.__callback_enter_moat = in_callback
         
@@ -60,16 +64,12 @@ class SuperMetroid():
             # do checks
             if self.__callback_run_started and self.__is_new_run_started(new_info):
                 self.__callback_run_started()
+            elif self.__callback_run_reset and self.__is_run_reset(new_info):
+                self.__callback_run_reset()
             elif self.__callback_enter_moat and self.__is_in_moat(new_info):
                 self.__callback_enter_moat()
             elif self.__callback_enter_phantoon and self.__is_entering_phantoon_fight(new_info):
                 self.__callback_enter_phantoon()
-
-            if self.__prev_game_info:
-                if self.__prev_game_info['room_id'] != new_info['room_id']:
-                    print('Room ID:', new_info['room_id'])
-                elif self.__prev_game_info['game_state'] != new_info['game_state']:
-                    print('Game State:', new_info['game_state'])
 
             # set this as our prev info now for next frame
             self.__prev_game_info = new_info
@@ -83,16 +83,24 @@ class SuperMetroid():
                     return new_info['room_id'] == 0xDF45 # ceres elevator room
         return False
         
+    def __is_run_reset(self, new_info):
+        if self.__prev_game_info and new_info:
+            if self.__prev_game_info['room_id'] != 0x0:
+                if self.__prev_game_info['game_state'] & 0x20 == 0: # attract screen
+                    if new_info['room_id'] == 0x0: # room id is 0 after a reset
+                        return True
+        return False
+        
     def __is_in_moat(self, new_info):
         if self.__prev_game_info and new_info:
-            if self.__prev_game_info['room_id'] == 0x0948C:
-                return new_info['room_id'] == 0x95FF
+            if self.__prev_game_info['room_id'] == 0x0948C: # kihunter/crab room before moat
+                return new_info['room_id'] == 0x95FF # moat room
         return False
         
     def __is_entering_phantoon_fight(self, new_info):
         if self.__prev_game_info and new_info:
-            if self.__prev_game_info['room_id'] == 0xCC6F:
-                return new_info['room_id'] == 0xCD13
+            if self.__prev_game_info['room_id'] == 0xCC6F: # basement room before phantoon
+                return new_info['room_id'] == 0xCD13 # phantoon's room
         return False
         
     def __get_room_id(self):

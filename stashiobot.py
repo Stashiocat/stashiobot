@@ -1,6 +1,7 @@
 import signal
 import threading
 import time
+import asyncio, concurrent.futures
 from twitchio.ext import commands
 from auth import Auth
 from channel_rewards import ChannelRewards
@@ -28,21 +29,34 @@ class Bot(commands.Bot):
         self.rewards = ChannelRewards()
         self.pubsub = PubSubHandler(self, self.auth, self.initial_channels)
         self.translator = MessageTranslator()
-        self.sm = SuperMetroid()
-        self.sm.start_game_info_update(0.2)
         
+        self.sm = SuperMetroid()
+        self.sm.start_game_info_update(1.0/60.0)
         self.sm.subscribe_for_run_start(self.run_started)
+        self.sm.subscribe_for_run_reset(self.run_reset)
         self.sm.subscribe_for_enter_phantoon(self.enter_phantoon)
         self.sm.subscribe_for_enter_moat(self.enter_moat)
+        self.__sm_in_run = False
         
+        self.__executor = concurrent.futures.ThreadPoolExecutor()
+
     def run_started(self):
-        print('Good luck, have fun!')
+        print('Run started')
+        self.__sm_in_run = True
+        
+    def run_reset(self):
+        print('Run reset')
+        self.__sm_in_run = False
         
     def enter_phantoon(self):
-        print('Phantoon started!')
+        if self.__sm_in_run:
+            channel = self.get_channel('stashiocat')
+            self.__executor.submit(asyncio.run, channel.send('!phanclose'))
         
     def enter_moat(self):
-        print('Entered moat!')
+        if self.__sm_in_run:
+            channel = self.get_channel('stashiocat')
+            self.__executor.submit(asyncio.run, channel.send('!phanopen'))
         
     async def event_ready(self):
         print('Connected!')
