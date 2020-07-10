@@ -9,6 +9,9 @@ PROCESS_ALL_ACCESS = (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0xFFF)
 TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 
+class ErrorReadingMemoryException(Exception):
+    pass
+
 class MODULEENTRY32(Structure):
     _fields_ = [ ( 'dwSize' , DWORD ) , 
                  ( 'th32ModuleID' , DWORD ),
@@ -49,7 +52,6 @@ class RetroarchReader():
         r = windll.kernel32.ReadProcessMemory(self.open_handle, libretro_wram, byref(wram_ptr), sizeof(wram_ptr), byref(bytesRead))
         
         if r == 0:
-            print("Failed to get WRam address")
             self.close_process()
             return False
 
@@ -105,11 +107,17 @@ class RetroarchReader():
         return mod_base_address + wram_offset
         
     def read_short(self, wram_addr):
-        assert 0 != self.open_handle, "Process isn't opened"
+        if 0 == self.open_handle:
+            raise ErrorReadingMemoryException
         
         out_val = c_ushort()
         bytesRead = c_ulonglong()
         
         r = windll.kernel32.ReadProcessMemory(self.open_handle, self.wram_address + wram_addr, byref(out_val), sizeof(out_val), byref(bytesRead))
         
+        if 0 == r:
+            self.close_process()
+            raise ErrorReadingMemoryException
+            return 0
+            
         return out_val.value

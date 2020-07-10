@@ -1,7 +1,7 @@
 import threading
 import time
 import collections
-from utils.retroarch import RetroarchReader
+from utils.retroarch import RetroarchReader, ErrorReadingMemoryException
 
 # Info taken from several places
 # 1. https://jathys.zophar.net/supermetroid/kejardon/
@@ -85,12 +85,11 @@ class WRamOffsets():
     PhantoonEyeOpenTimer = 0x0FE8
 
 class SuperMetroid():
-    def __init__(self):
-        self.retroarch_reader = RetroarchReader()
-        self.__retroarch_ready = self.retroarch_reader.open_process()
+    def __init__(self):        
+        self.__update_game_thread = None
+        self.__hook_retroarch_thread = None
         
         self.__shouldTick = False
-        self.__thread = None
         self.__update_rate = 1.0
         
         self.__callback_run_started = None
@@ -98,27 +97,32 @@ class SuperMetroid():
         self.__room_transition_callbacks = []
         
         self.__prev_game_info = None
+
+        self.retroarch_reader = RetroarchReader()
+        self.__retroarch_ready = self.retroarch_reader.open_process()
+        
+        if not self.__retroarch_ready:
+            print('Failed to hook snes9x_libretro.dll in retroarch.exe. Waiting for process.')
+            self.__hook_retroarch_thread = threading.Thread(target=self.__tick_hook_retroarch)
+            self.__hook_retroarch_thread.start()
+        else:
+            print('Retroarch hooked!')
         
     def __del__(self):
         self.retroarch_reader.close_process()
         
     def start_game_info_update(self, update_rate=1.0):
-        if self.__retroarch_ready == False:
-            # todo: create a thread that waits for retroarch to run
-            print('Failed to start SM reader. Is Retroarch running?')
-            return
-            
         assert self.__shouldTick == False, "Ticking already started"
         self.__shouldTick = True
         self.__update_rate = update_rate
-        self.__thread = threading.Thread(target=self.__tick_update_game_info)
-        self.__thread.start()
+        self.__update_game_thread = threading.Thread(target=self.__tick_update_game_info)
+        self.__update_game_thread.start()
         
     def stop_game_info_update(self):
         assert self.__shouldTick == True, "Ticking hasn't started yet"
         self.__shouldTick = False
-        self.__thread.join()
-        self.__thread = None
+        self.__update_game_thread.join()
+        self.__update_game_thread = None
         
     def subscribe_for_run_start(self, in_callback):
         self.__callback_run_started = in_callback
@@ -134,25 +138,35 @@ class SuperMetroid():
         }
         self.__room_transition_callbacks.append(data)
         
+    def __tick_hook_retroarch(self):
+        while not self.__retroarch_ready:
+            self.__retroarch_ready = self.retroarch_reader.open_process()
+            
+            #try every second or so
+            time.sleep(1.0)
+        print('Connection to Super Metroid restored.')
+        self.__hook_retroarch_thread = None
+        
     def __tick_update_game_info(self):
         while self.__shouldTick:
-            # do update
-            new_info = dict()
-            new_info['room_id'] = self.__get_room_id()
-            new_info['game_state'] = self.__get_game_state()
-            
-            # do checks
-            if self.__callback_run_started and self.__is_new_run_started(new_info):
-                self.__callback_run_started()
-            elif self.__callback_run_reset and self.__is_run_reset(new_info):
-                self.__callback_run_reset()
-            elif self.__prev_game_info != None:
-                for transition in self.__room_transition_callbacks:
-                    if self.__check_room_transition(new_info, transition['from'], transition['to']):
-                        transition['callback']()
+            if self.__retroarch_ready:
+                # do update
+                new_info = dict()
+                new_info['room_id'] = self.__get_room_id()
+                new_info['game_state'] = self.__get_game_state()
+                
+                # do checks
+                if self.__callback_run_started and self.__is_new_run_started(new_info):
+                    self.__callback_run_started()
+                elif self.__callback_run_reset and self.__is_run_reset(new_info):
+                    self.__callback_run_reset()
+                elif self.__prev_game_info != None:
+                    for transition in self.__room_transition_callbacks:
+                        if self.__check_room_transition(new_info, transition['from'], transition['to']):
+                            transition['callback']()
 
-            # set this as our prev info now for next frame
-            self.__prev_game_info = new_info
+                # set this as our prev info now for next frame
+                self.__prev_game_info = new_info
             
             time.sleep(self.__update_rate)
             
@@ -175,8 +189,18 @@ class SuperMetroid():
     def __check_game_transition(self, new_game_info, before, after):
         return self.__prev_game_info['game_state'] == before and new_game_info['game_state'] == after
     
+    def __read_short(self, addr):
+        try:
+            self.retroarch_reader.read_short(addr)
+        except ErrorReadingMemoryException:
+            if not self.__hook_retroarch_thread:
+                self.__retroarch_ready = False
+                print('Lost connection to Super Metroid. Attempting reconnection.')
+                self.__hook_retroarch_thread = threading.Thread(target=self.__tick_hook_retroarch)
+                self.__hook_retroarch_thread.start()
+    
     def __get_room_id(self):
-        return self.retroarch_reader.read_short(WRamOffsets.RoomID)
+        return self.__read_short(WRamOffsets.RoomID)
         
     def __get_game_state(self):
-        return self.retroarch_reader.read_short(WRamOffsets.GameState)
+        return self.__read_short(WRamOffsets.GameState)
