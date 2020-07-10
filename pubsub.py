@@ -1,13 +1,14 @@
 import json
 import requests
+import random
 from enum import Enum
 from utils.jsonparse import JsonParse
 
 class PubSubReturn(Enum):
-    SUCCESS = 0
-    EXPIRED_ACCESS_TOKEN = 1
-    BAD_AUTH = 2
-    UNKNOWN_ERROR = 3
+    Success = 0
+    ExpiredAccessToken = 1
+    BadAuth = 2
+    UnknownError = 3
 
 class PubSubHandler():
     def __init__(self, twitch_bot, auth, channels):
@@ -24,7 +25,7 @@ class PubSubHandler():
         
     async def handle_rewards(self, data, rewards):
         if not 'type' in data:
-            return PubSubReturn.UNKNOWN_ERROR
+            return PubSubReturn.UnknownError
             
         if data['type'] == "RESPONSE":
             if data['error'] == '':
@@ -33,13 +34,13 @@ class PubSubHandler():
                 if not self.__auth.validate_access_token():
                     self.__auth.refresh_access_token()
                     print('Your access token has expired. The token has been refreshed.')
-                    return PubSubReturn.EXPIRED_ACCESS_TOKEN
+                    return PubSubReturn.ExpiredAccessToken
                 else:
                     print('Received ERR_BADAUTH but access token has not expired. Are you subscribing to the wrong channel?')
-                    return PubSubReturn.BAD_AUTH
+                    return PubSubReturn.BadAuth
             else:
                 print('Error:', data['error'])
-                return PubSubReturn.UNKNOWN_ERROR
+                return PubSubReturn.UnknownError
                 
         elif data['type'] == "MESSAGE":
             parse = JsonParse(json.loads(data['data']['message']))
@@ -51,7 +52,7 @@ class PubSubHandler():
                 
                 rewards.handle_pubsub_reward(reward_id, user, message)
                 
-        return PubSubReturn.SUCCESS
+        return PubSubReturn.Success
             
     ###########################################################################
     # Private helper methods
@@ -73,3 +74,6 @@ class PubSubHandler():
     def __get_channel_reward_topics(self, channels):
         channel_ids = self.__get_channel_ids(channels)
         return [f'channel-points-channel-v1.{channel}' for channel in channel_ids]
+        
+    def __generate_nonce(length=8):
+        return ''.join([str(random.randint(0, 9)) for i in range(length)])

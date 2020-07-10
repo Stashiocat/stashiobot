@@ -7,7 +7,7 @@ from auth import Auth
 from channel_rewards import ChannelRewards
 from pubsub import PubSubHandler, PubSubReturn
 from utils.language import MessageTranslator
-from utils.supermetroid import SuperMetroid
+from utils.supermetroid import SuperMetroid, Rooms
 
 class Bot(commands.Bot):
     
@@ -34,8 +34,8 @@ class Bot(commands.Bot):
         self.sm.start_game_info_update(1.0/60.0)
         self.sm.subscribe_for_run_start(self.run_started)
         self.sm.subscribe_for_run_reset(self.run_reset)
-        self.sm.subscribe_for_enter_phantoon(self.enter_phantoon)
-        self.sm.subscribe_for_enter_moat(self.enter_moat)
+        self.sm.subscribe_to_room_transition(Rooms.WreckedShip.Basement, Rooms.WreckedShip.Phantoon, self.enter_phantoon)
+        self.sm.subscribe_to_room_transition(Rooms.Crateria.Kihunter, Rooms.Crateria.Moat, self.enter_moat)
         self.__sm_in_run = False
         
         self.__executor = concurrent.futures.ThreadPoolExecutor()
@@ -64,7 +64,7 @@ class Bot(commands.Bot):
     
     async def event_raw_pubsub(self, data):
         result = await self.pubsub.handle_rewards(data, self.rewards)
-        if result == PubSubReturn.EXPIRED_ACCESS_TOKEN:
+        if result == PubSubReturn.ExpiredAccessToken:
             await self.pubsub.subscribe_for_channel_rewards()
     
     async def event_message(self, message):
