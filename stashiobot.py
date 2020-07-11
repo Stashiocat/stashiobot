@@ -1,11 +1,10 @@
 import signal
-import threading
-import time
 import asyncio, concurrent.futures
 from twitchio.ext import commands
 from auth import Auth
 from channel_rewards import ChannelRewards
 from pubsub import PubSubHandler, PubSubReturn
+from supermetroidmanager import SuperMetroidRunManager, SuperMetroidCallbacks
 from utils.language import MessageTranslator
 from utils.supermetroid import SuperMetroid, Rooms
 
@@ -30,34 +29,36 @@ class Bot(commands.Bot):
         self.pubsub = PubSubHandler(self, self.auth, self.initial_channels)
         self.translator = MessageTranslator()
         
-        self.sm = SuperMetroid()
-        self.sm.start_game_info_update(1.0/60.0)
-        self.sm.subscribe_for_run_start(self.run_started)
-        self.sm.subscribe_for_run_reset(self.run_reset)
-        self.sm.subscribe_to_room_transition(Rooms.WreckedShip.Basement, Rooms.WreckedShip.Phantoon, self.enter_phantoon)
-        self.sm.subscribe_to_room_transition(Rooms.Crateria.Kihunter, Rooms.Crateria.Moat, self.enter_moat)
-        self.__sm_in_run = False
+        sm_callbacks = SuperMetroidCallbacks(
+                    run_started        = self.run_started,
+                    run_reset          = self.run_reset,
+                    enter_phantoon     = self.enter_phantoon,
+                    enter_moat         = self.enter_moat,
+                    phantoon_fight_end = self.phantoon_fight_end,
+                    samus_dead         = None #self.samus_dead
+                )
+        self.sm_manager = SuperMetroidRunManager(sm_callbacks)
         
         self.__executor = concurrent.futures.ThreadPoolExecutor()
 
     def run_started(self):
         print('Run started')
-        self.__sm_in_run = True
         
     def run_reset(self):
         print('Run reset')
-        self.__sm_in_run = False
         
     def enter_phantoon(self):
-        if self.__sm_in_run:
-            channel = self.get_channel('stashiocat')
-            self.__executor.submit(asyncio.run, channel.send('!phanclose'))
+        channel = self.get_channel('stashiocat')
+        self.__executor.submit(asyncio.run, channel.send('!phanclose'))
         
     def enter_moat(self):
-        if self.__sm_in_run:
-            channel = self.get_channel('stashiocat')
-            self.__executor.submit(asyncio.run, channel.send('!phanopen'))
-        
+        channel = self.get_channel('stashiocat')
+        self.__executor.submit(asyncio.run, channel.send('!phanopen'))
+    
+    def phantoon_fight_end(self, patterns):
+        channel = self.get_channel('stashiocat')
+        self.__executor.submit(asyncio.run, channel.send(f"!phanend {' '.join(patterns)}"))
+    
     async def event_ready(self):
         print('Connected!')
         await self.pubsub.subscribe_for_channel_rewards()
@@ -71,9 +72,12 @@ class Bot(commands.Bot):
         if message.author.name.lower() != self.nick.lower():
             prefix = await self.get_prefix(message)
             if not prefix:
-                await self.translator.chat_auto_translate(message)
-            else:
-                await self.handle_commands(message)
+                src, dst, msg = self.translator.chat_auto_translate(message)
+                if src and dst and msg:
+                    await message.channel.send(f'{src} => {dst}: {msg}')
+                    return
+                 
+            await self.handle_commands(message)
 
     async def event_raw_data(self, data):
         #print(data)

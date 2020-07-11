@@ -78,11 +78,17 @@ class Rooms():
         Basement = 0xCC6F
         Phantoon = 0xCD13
 
-class WRamOffsets():
+class WRAMOffsets():
     RoomID               = 0x079B
     GameState            = 0x0998
+    SamusHP              = 0x09C2
     EnemyHP              = 0x0F8C
     PhantoonEyeOpenTimer = 0x0FE8
+    
+class PhantoonPatterns():
+    Fast = 0x003C
+    Mid  = 0x0168
+    Slow = 0x02D0
 
 class SuperMetroid():
     def __init__(self):        
@@ -94,6 +100,9 @@ class SuperMetroid():
         
         self.__callback_run_started = None
         self.__callback_run_reset = None
+        self.__callback_enemy_hp = None
+        self.__callback_samus_hp = None
+        self.__callback_phantoon_eye = None
         self.__room_transition_callbacks = []
         
         self.__prev_game_info = None
@@ -130,6 +139,15 @@ class SuperMetroid():
     def subscribe_for_run_reset(self, in_callback):
         self.__callback_run_reset = in_callback
         
+    def subscribe_to_enemy_hp(self, in_callback):
+        self.__callback_enemy_hp = in_callback
+     
+    def subscribe_to_samus_hp(self, in_callback):
+        self.__callback_samus_hp = in_callback
+    
+    def subscribe_to_phantoon_eye(self, in_callback):
+        self.__callback_phantoon_eye = in_callback
+        
     def subscribe_to_room_transition(self, before, after, in_callback):
         data = {
             'from': before,
@@ -152,18 +170,32 @@ class SuperMetroid():
             if self.__retroarch_ready:
                 # do update
                 new_info = dict()
-                new_info['room_id'] = self.__get_room_id()
-                new_info['game_state'] = self.__get_game_state()
+                new_info['room_id']      = self.__get_room_id()
+                new_info['game_state']   = self.__get_game_state()
+                new_info['enemy_hp']     = self.__get_enemy_hp()
+                new_info['samus_hp']     = self.__get_samus_hp()
+                new_info['phantoon_eye'] = self.__get_phantoon_eye_timer()
                 
                 # do checks
-                if self.__callback_run_started and self.__is_new_run_started(new_info):
-                    self.__callback_run_started()
-                elif self.__callback_run_reset and self.__is_run_reset(new_info):
-                    self.__callback_run_reset()
-                elif self.__prev_game_info != None:
-                    for transition in self.__room_transition_callbacks:
-                        if self.__check_room_transition(new_info, transition['from'], transition['to']):
-                            transition['callback']()
+                if self.__prev_game_info:
+                    # Room based transitions where only one can happen at a time
+                    if self.__callback_run_started and self.__is_new_run_started(new_info):
+                        self.__callback_run_started()
+                    elif self.__callback_run_reset and self.__is_run_reset(new_info):
+                        self.__callback_run_reset()
+                    else:
+                        for transition in self.__room_transition_callbacks:
+                            if self.__check_room_transition(new_info, transition['from'], transition['to']):
+                                transition['callback']()
+                                
+                    # Standalone events that can all happen
+                    callbackChecks = [
+                        (self.__callback_enemy_hp,     self.__check_enemy_hp_change,    [new_info['enemy_hp']]),
+                        (self.__callback_samus_hp,     self.__check_samus_hp_change,    [new_info['samus_hp']]),
+                        (self.__callback_phantoon_eye, self.__check_phantoon_eye_timer, [new_info['phantoon_eye']])
+                    ]
+                    for callback, check, params in callbackChecks:
+                        if callback and check(new_info): callback(*params)
 
                 # set this as our prev info now for next frame
                 self.__prev_game_info = new_info
@@ -171,36 +203,56 @@ class SuperMetroid():
             time.sleep(self.__update_rate)
             
     def __is_new_run_started(self, new_info):
-        if self.__prev_game_info and new_info:
-            return self.__check_game_transition(new_info, GameStates.GameOptionsMenu, GameStates.NewGamePostIntro)
-        return False
+        return self.__check_game_transition(new_info, GameStates.GameOptionsMenu, GameStates.NewGamePostIntro)
         
     def __is_run_reset(self, new_info):
-        if self.__prev_game_info and new_info:
-            if self.__prev_game_info['room_id'] != Rooms.Empty:
-                if new_info['room_id'] == Rooms.Empty:
-                    return GameStates.is_demo_state(self.__prev_game_info['game_state']) == False
+        if self.__prev_game_info['room_id'] != Rooms.Empty:
+            if new_info['room_id'] == Rooms.Empty:
+                return GameStates.is_demo_state(self.__prev_game_info['game_state']) == False
                     
         return False
-    
-    def __check_room_transition(self, new_game_info, before, after):
-        return self.__prev_game_info['room_id'] == before and new_game_info['room_id'] == after
         
-    def __check_game_transition(self, new_game_info, before, after):
-        return self.__prev_game_info['game_state'] == before and new_game_info['game_state'] == after
+    def __check_enemy_hp_change(self, new_info):
+        return self.__prev_game_info['enemy_hp'] != new_info['enemy_hp']
+        
+    def __check_samus_hp_change(self, new_info):
+        return self.__prev_game_info['samus_hp'] != new_info['samus_hp']
+        
+    def __check_phantoon_eye_timer(self, new_info):
+        return self.__prev_game_info['phantoon_eye'] != new_info['phantoon_eye']
+    
+    def __check_room_transition(self, new_info, before, after):
+        return self.__prev_game_info['room_id'] == before and new_info['room_id'] == after
+        
+    def __check_game_transition(self, new_info, before, after):
+        return self.__prev_game_info['game_state'] == before and new_info['game_state'] == after
     
     def __read_short(self, addr):
         try:
-            self.retroarch_reader.read_short(addr)
+            return self.retroarch_reader.read_short(addr)
         except ErrorReadingMemoryException:
             if not self.__hook_retroarch_thread:
                 self.__retroarch_ready = False
                 print('Lost connection to Super Metroid. Attempting reconnection.')
                 self.__hook_retroarch_thread = threading.Thread(target=self.__tick_hook_retroarch)
                 self.__hook_retroarch_thread.start()
-    
+                
+        return None
+                
+    ###########################################################################
+    # WRAM read helpers
+    ###########################################################################
     def __get_room_id(self):
-        return self.__read_short(WRamOffsets.RoomID)
+        return self.__read_short(WRAMOffsets.RoomID)
         
     def __get_game_state(self):
-        return self.__read_short(WRamOffsets.GameState)
+        return self.__read_short(WRAMOffsets.GameState)
+        
+    def __get_enemy_hp(self):
+        return self.__read_short(WRAMOffsets.EnemyHP)
+        
+    def __get_samus_hp(self):
+        return self.__read_short(WRAMOffsets.SamusHP)
+        
+    def __get_phantoon_eye_timer(self):
+        return self.__read_short(WRAMOffsets.PhantoonEyeOpenTimer)

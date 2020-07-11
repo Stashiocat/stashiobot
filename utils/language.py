@@ -4,15 +4,15 @@ class MessageTranslator():
     def __init__(self):
         self.__translator = Translator()
         
-    async def chat_auto_translate(self, message):
+    def chat_auto_translate(self, message):
         fixed_message, emotes = self.__strip_message_for_translate(message)
         detected = self.__translator.detect(fixed_message)
         if detected.lang != 'en' and detected.confidence > 0.95:
             translated = self.__translator.translate(fixed_message)
             fixed_message = self.__fix_stripped_message(translated.text, emotes)
-            await message.channel.send(f'{translated.src} => {translated.dest}: {fixed_message}')
-            return True
-        return False
+            return translated.src, translated.dest, fixed_message
+            
+        return None, None, None
         
     def __strip_message_for_translate(self, message):
         if not 'emotes' in message.tags or message.tags['emotes'] == '':
