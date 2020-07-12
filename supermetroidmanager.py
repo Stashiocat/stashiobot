@@ -30,7 +30,7 @@ class SuperMetroidRunManager():
         self.__sm.subscribe_to_samus_hp(self.__samus_hp)
         self.__sm.subscribe_to_phantoon_eye(self.__phantoon_eye_timer)
         
-        self.__in_run = True
+        self.__in_run = False
         self.__in_phantoon_room = False
         self.__in_phantoon_fight = False
         self.__current_phantoon_round = 0
@@ -90,7 +90,6 @@ class SuperMetroidRunManager():
         if self.__in_phantoon_fight:
             if len(self.__phantoon_patterns) < self.__current_phantoon_round:
                 pattern = self.__get_phantoon_pattern(timer)
-                print('Phantoon pattern:', pattern)
                 self.__phantoon_patterns.append(pattern)
 
     ###########################################################################
