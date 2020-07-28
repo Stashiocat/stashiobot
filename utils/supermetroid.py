@@ -71,26 +71,39 @@ class Rooms():
         Elevator = 0xDF45
         
     class Crateria():
-        Kihunter = 0x948C
-        Moat     = 0x95FF
+        Kihunter            = 0x948C
+        Moat                = 0x95FF
+        RedBrinstarElevator = 0x962A
+        
+    class RedBrinstar():
+        Caterpillar = 0xA322
         
     class WreckedShip():
         Basement = 0xCC6F
         Phantoon = 0xCD13
-
-class WRAMOffsets():
-    RoomID               = 0x079B
-    GameState            = 0x0998
-    SamusHP              = 0x09C2
-    EnemyHP              = 0x0F8C
-    PhantoonEyeOpenTimer = 0x0FE8
     
 class PhantoonPatterns():
     Fast = 0x003C
     Mid  = 0x0168
     Slow = 0x02D0
+    
+class CeresEscapeState():
+    NotInEscape          = 0x0000
+    RidleySwoopCutscene  = 0x0001
+    EscapeTimerInitiated = 0x0002
+    ElevatorRoomRotating = 0x8000
 
 class SuperMetroid():
+    class Callbacks():
+        RunStarted  = 0
+        RunReset    = 1
+        EnemyHP     = 2
+        SamusHP     = 3
+        PhantoonEye = 4
+        
+    class MemoryUpdates():
+        Ceres = 0
+        
     def __init__(self):        
         self.__update_game_thread = None
         self.__hook_retroarch_thread = None
@@ -98,11 +111,7 @@ class SuperMetroid():
         self.__shouldTick = False
         self.__update_rate = 1.0
         
-        self.__callback_run_started = None
-        self.__callback_run_reset = None
-        self.__callback_enemy_hp = None
-        self.__callback_samus_hp = None
-        self.__callback_phantoon_eye = None
+        self.__callbacks = dict()
         self.__room_transition_callbacks = []
         
         self.__prev_game_info = None
@@ -116,6 +125,37 @@ class SuperMetroid():
             self.__hook_retroarch_thread.start()
         else:
             print('Retroarch hooked!')
+
+        self.__wram_offsets = {
+            'always_update': {
+                'room_id'   : { 'offset': 0x079B, 'size': 2 },
+                'game_state': { 'offset': 0x0998, 'size': 2 },
+                'samus_hp'  : { 'offset': 0x09C2, 'size': 2 },
+            },
+            # Memory address to read if you're in a specific room
+            'room_update': {
+                Rooms.WreckedShip.Phantoon: {
+                    'enemy_hp'           : { 'offset': 0x0F8C, 'size': 2 },
+                    'phantoon_eye_timer' : { 'offset': 0x0FE8, 'size': 2 },
+                }
+            },
+            # Allow subscribing to read certain values
+            'subscriptions': {
+                'ceres_update': {
+                    'ceres_timer': { 'offset': 0x945, 'size': 2 },
+                    'ceres_state': { 'offset': 0x93F, 'size': 2 },
+                }
+            }
+        }
+        
+        self.__callback_info = {
+            # Subscription ID                         # Check if callback should be called      # Parameters for the callback
+            SuperMetroid.Callbacks.RunStarted:  { 'check': self.__is_new_run_started,       'params': lambda info: [], },
+            SuperMetroid.Callbacks.RunReset:    { 'check': self.__is_run_reset,             'params': lambda info: [], },
+            SuperMetroid.Callbacks.EnemyHP:     { 'check': self.__check_enemy_hp_change,    'params': lambda info: [info['enemy_hp']], },
+            SuperMetroid.Callbacks.SamusHP:     { 'check': self.__check_samus_hp_change,    'params': lambda info: [info['samus_hp']], },
+            SuperMetroid.Callbacks.PhantoonEye: { 'check': self.__check_phantoon_eye_timer, 'params': lambda info: [info['phantoon_eye_timer']], },
+        }
         
     def __del__(self):
         self.retroarch_reader.close_process()
@@ -133,20 +173,19 @@ class SuperMetroid():
         self.__update_game_thread.join()
         self.__update_game_thread = None
         
-    def subscribe_for_run_start(self, in_callback):
-        self.__callback_run_started = in_callback
+    def subscribe(self, in_type, in_callback):
+        if not in_type in self.__callbacks:
+            self.__callbacks[in_type] = in_callback
         
-    def subscribe_for_run_reset(self, in_callback):
-        self.__callback_run_reset = in_callback
+    def unsubscribe(self, in_type):
+        if in_type in self.__callbacks:
+            del self.__callbacks[in_type]
         
-    def subscribe_to_enemy_hp(self, in_callback):
-        self.__callback_enemy_hp = in_callback
-     
-    def subscribe_to_samus_hp(self, in_callback):
-        self.__callback_samus_hp = in_callback
-    
-    def subscribe_to_phantoon_eye(self, in_callback):
-        self.__callback_phantoon_eye = in_callback
+    def enable_memory_update(self, in_type):
+        pass
+        
+    def disable_memory_update(self, in_type):
+        pass
         
     def subscribe_to_room_transition(self, before, after, in_callback):
         data = {
@@ -168,34 +207,19 @@ class SuperMetroid():
     def __tick_update_game_info(self):
         while self.__shouldTick:
             if self.__retroarch_ready:
-                # do update
-                new_info = dict()
-                new_info['room_id']      = self.__get_room_id()
-                new_info['game_state']   = self.__get_game_state()
-                new_info['enemy_hp']     = self.__get_enemy_hp()
-                new_info['samus_hp']     = self.__get_samus_hp()
-                new_info['phantoon_eye'] = self.__get_phantoon_eye_timer()
+                new_info = self.__read_updated_memory()
                 
-                # do checks
+                
                 if self.__prev_game_info:
-                    # Room based transitions where only one can happen at a time
-                    if self.__callback_run_started and self.__is_new_run_started(new_info):
-                        self.__callback_run_started()
-                    elif self.__callback_run_reset and self.__is_run_reset(new_info):
-                        self.__callback_run_reset()
-                    else:
-                        for transition in self.__room_transition_callbacks:
-                            if self.__check_room_transition(new_info, transition['from'], transition['to']):
-                                transition['callback']()
-                                
-                    # Standalone events that can all happen
-                    callbackChecks = [
-                        (self.__callback_enemy_hp,     self.__check_enemy_hp_change,    [new_info['enemy_hp']]),
-                        (self.__callback_samus_hp,     self.__check_samus_hp_change,    [new_info['samus_hp']]),
-                        (self.__callback_phantoon_eye, self.__check_phantoon_eye_timer, [new_info['phantoon_eye']])
-                    ]
-                    for callback, check, params in callbackChecks:
-                        if callback and check(new_info): callback(*params)
+                    for subscription in self.__callbacks:
+                        if self.__callbacks[subscription]:
+                            ci = self.__callback_info[subscription]
+                            if ci['check'](new_info):
+                                self.__callbacks[subscription](*ci['params'](new_info))
+                
+                    for transition in self.__room_transition_callbacks:
+                        if self.__check_room_transition(new_info, transition['from'], transition['to']):
+                            transition['callback']()
 
                 # set this as our prev info now for next frame
                 self.__prev_game_info = new_info
@@ -212,14 +236,17 @@ class SuperMetroid():
                     
         return False
         
+    def __check_property_change(self, prop, new_info):
+        return prop in self.__prev_game_info and prop in new_info and self.__prev_game_info[prop] != new_info[prop]
+        
     def __check_enemy_hp_change(self, new_info):
-        return self.__prev_game_info['enemy_hp'] != new_info['enemy_hp']
+        return self.__check_property_change('enemy_hp', new_info)
         
     def __check_samus_hp_change(self, new_info):
-        return self.__prev_game_info['samus_hp'] != new_info['samus_hp']
+        return self.__check_property_change('samus_hp', new_info)
         
     def __check_phantoon_eye_timer(self, new_info):
-        return self.__prev_game_info['phantoon_eye'] != new_info['phantoon_eye']
+        return self.__check_property_change('phantoon_eye_timer', new_info)
     
     def __check_room_transition(self, new_info, before, after):
         return self.__prev_game_info['room_id'] == before and new_info['room_id'] == after
@@ -227,9 +254,9 @@ class SuperMetroid():
     def __check_game_transition(self, new_info, before, after):
         return self.__prev_game_info['game_state'] == before and new_info['game_state'] == after
     
-    def __read_short(self, addr):
+    def __read_mem(self, addr, size):
         try:
-            return self.retroarch_reader.read_short(addr)
+            return self.retroarch_reader.read_memory(addr, size)
         except ErrorReadingMemoryException:
             if not self.__hook_retroarch_thread:
                 self.__retroarch_ready = False
@@ -238,21 +265,23 @@ class SuperMetroid():
                 self.__hook_retroarch_thread.start()
                 
         return None
+        
+    def __read_updated_memory(self):
+        mem = dict()
+        for field in self.__wram_offsets['always_update']:
+            assert field not in mem, f"'{field}' already present in __wram_offsets"
+            info = self.__wram_offsets['always_update'][field]
+            mem[field] = self.__read_mem(info['offset'], info['size'])
+            
+        assert 'room_id' in mem, "'room_id' must be present under 'always_update' in __wram_offsets!"
+        
+        # Check if there's any addresses we want to read if we're in this specific room
+        if mem['room_id'] in self.__wram_offsets['room_update']:
+            room_info = self.__wram_offsets['room_update'][mem['room_id']]
+            for field in room_info:
+                assert field not in mem, f"'{field}' already present in __wram_offsets"
+                info = room_info[field]
+                mem[field] = self.__read_mem(info['offset'], info['size'])
                 
-    ###########################################################################
-    # WRAM read helpers
-    ###########################################################################
-    def __get_room_id(self):
-        return self.__read_short(WRAMOffsets.RoomID)
+        return mem
         
-    def __get_game_state(self):
-        return self.__read_short(WRAMOffsets.GameState)
-        
-    def __get_enemy_hp(self):
-        return self.__read_short(WRAMOffsets.EnemyHP)
-        
-    def __get_samus_hp(self):
-        return self.__read_short(WRAMOffsets.SamusHP)
-        
-    def __get_phantoon_eye_timer(self):
-        return self.__read_short(WRAMOffsets.PhantoonEyeOpenTimer)

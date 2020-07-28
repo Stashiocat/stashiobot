@@ -44,6 +44,8 @@ class RetroarchReader():
         libretro_wram = self.get_snes9x_libretro_wram_address(pid)
         
         if 0 == libretro_wram:
+            if self.open_handle:
+                self.close_process()
             return False
         
         wram_ptr = c_ulonglong()
@@ -94,23 +96,38 @@ class RetroarchReader():
         base_address = m32.modBaseAddr
         mod_base_address = 0
         
+        found_base_address = False
         while ret:
             if m32.szModule == b'snes9x_libretro.dll':
                 mod_base_address = m32.modBaseAddr
+                found_base_address = True
                 break
             ret = windll.kernel32.Module32Next(hModule, pointer(m32))
             
         windll.kernel32.CloseHandle(hModule)
         
+        if not found_base_address:
+            return 0
+        
         # don't judge me
         wram_offset = 0x2C9B08
         return mod_base_address + wram_offset
         
-    def read_short(self, wram_addr):
+    def __alloc_mem(self, num_bytes):
+        if num_bytes == 1:
+            return c_ubyte()
+        elif num_bytes == 2:
+            return c_ushort()
+        elif num_bytes == 4:
+            return c_ulong()
+        elif num_bytes == 8:
+            return c_ulonglong()
+        
+    def read_memory(self, wram_addr, num_bytes):
         if 0 == self.open_handle:
             raise ErrorReadingMemoryException
         
-        out_val = c_ushort()
+        out_val = self.__alloc_mem(num_bytes)
         bytesRead = c_ulonglong()
         
         r = windll.kernel32.ReadProcessMemory(self.open_handle, self.wram_address + wram_addr, byref(out_val), sizeof(out_val), byref(bytesRead))

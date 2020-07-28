@@ -1,4 +1,5 @@
 import signal
+import random
 import asyncio, concurrent.futures
 from twitchio.ext import commands
 from auth import Auth
@@ -38,8 +39,8 @@ class Bot(commands.Bot):
                     samus_dead         = None #self.samus_dead
                 )
         self.sm_manager = SuperMetroidRunManager(sm_callbacks)
-        
-        self.__executor = concurrent.futures.ThreadPoolExecutor()
+        self.is_phan_open = False
+        self.pool_executor = concurrent.futures.ThreadPoolExecutor()
 
     def run_started(self):
         print('Run started')
@@ -48,16 +49,20 @@ class Bot(commands.Bot):
         print('Run reset')
         
     def enter_phantoon(self):
-        channel = self.get_channel('stashiocat')
-        self.__executor.submit(asyncio.run, channel.send('!phanclose'))
+        if self.is_phan_open:
+            self.is_phan_open = False
+            channel = self.get_channel('stashiocat')
+            self.pool_executor.submit(asyncio.run, channel.send('!phanclose'))
         
     def enter_moat(self):
-        channel = self.get_channel('stashiocat')
-        self.__executor.submit(asyncio.run, channel.send('!phanopen'))
+        if not self.is_phan_open:
+            self.is_phan_open = True
+            channel = self.get_channel('stashiocat')
+            self.pool_executor.submit(asyncio.run, channel.send('!phanopen'))
     
     def phantoon_fight_end(self, patterns):
         channel = self.get_channel('stashiocat')
-        self.__executor.submit(asyncio.run, channel.send(f"!phanend {' '.join(patterns)}"))
+        self.pool_executor.submit(asyncio.run, channel.send(f"!phanend {' '.join(patterns)}"))
     
     async def event_ready(self):
         print('Connected!')
@@ -87,8 +92,12 @@ class Bot(commands.Bot):
         pass
         
     @commands.command(name='nou')
-    async def my_command(self, ctx):
+    async def no_u(self, ctx):
         await ctx.send('NO U')
+    
+    @commands.command(name='deerforce')
+    async def deerforce(self, ctx):
+        await ctx.send(' '.join([chr(ord(c) & ~(random.randint(0,1)*32)) for c in "deerforce"]))
 
 # make Ctrl-C actually kill the process
 signal.signal(signal.SIGINT, signal.SIG_DFL)
