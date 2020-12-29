@@ -3,7 +3,7 @@ import threading
 import json
 from dataclasses import dataclass
 from typing import Any, Callable
-from utils.supermetroid import SuperMetroid, Rooms, PhantoonPatterns
+from utils.supermetroid import SuperMetroid, Rooms, PhantoonPatterns, GameStates
 
 @dataclass
 class SuperMetroidCallbacks():
@@ -13,6 +13,8 @@ class SuperMetroidCallbacks():
     enter_moat         : Callable[[], Any]
     phantoon_fight_end : Callable[[], Any]
     samus_dead         : Callable[[], Any]
+    ceres_start        : Callable[[], Any]
+    ceres_end          : Callable[[], Any]
     ceres_timer        : Callable[[], Any]
     
 class SuperMetroidRun():
@@ -34,6 +36,11 @@ class SuperMetroidStats():
             self.__stat_json = json.loads(f)
 
 class SuperMetroidRunManager():
+    class CeresState():
+        NotInCeres = 0
+        Intro = 1
+        Escape = 2
+        
     def __init__(self, in_callbacks):
         self.__sm = SuperMetroid()
         self.__sm.start_game_info_update(1.0/60.0)
@@ -46,10 +53,17 @@ class SuperMetroidRunManager():
         self.__sm.subscribe(SuperMetroid.Callbacks.EnemyHP    , self.__enemy_hp)
         self.__sm.subscribe(SuperMetroid.Callbacks.SamusHP    , self.__samus_hp)
         self.__sm.subscribe(SuperMetroid.Callbacks.PhantoonEye, self.__phantoon_eye_timer)
-        self.__sm.subscribe_to_room_transition(Rooms.WreckedShip.Basement   , Rooms.WreckedShip.Phantoon        , self.__enter_phantoon)
-        self.__sm.subscribe_to_room_transition(Rooms.RedBrinstar.Caterpillar, Rooms.Crateria.RedBrinstarElevator, self.__enter_moat)
+        self.__sm.subscribe(SuperMetroid.Callbacks.CeresTimer , self.__ceres_timer)
+        self.__sm.subscribe(SuperMetroid.Callbacks.GameState  , self.__game_state)
+        self.__sm.subscribe_to_room_transition(Rooms.WreckedShip.Basement, Rooms.WreckedShip.Phantoon, self.__enter_phantoon)
+        self.__sm.subscribe_to_room_transition(Rooms.Crateria.Kihunter   , Rooms.Crateria.Moat       , self.__enter_moat)
         
         self.__in_run = False
+        
+        # Ceres
+        self.__ceres_state = SuperMetroidRunManager.CeresState.NotInCeres
+        
+        # Phantoon
         self.__in_phantoon_room = False
         self.__in_phantoon_fight = False
         self.__phantoon_dead = False
@@ -64,14 +78,18 @@ class SuperMetroidRunManager():
         
     def __run_reset(self):
         self.__in_run = False
+        if self.__ceres_state == SuperMetroidRunManager.CeresState.Escape:
+            self.__ceres_state = SuperMetroidRunManager.CeresState.NotInCeres
+            
         if self.__callbacks.run_reset:
             self.__callbacks.run_reset()
+            
+    def __game_state(self, game_state):
+        pass
         
     def __enter_phantoon(self):
         if self.__in_run and not self.__phantoon_dead:
             self.__in_phantoon_room = True
-            if self.__callbacks.enter_phantoon:
-                self.__callbacks.enter_phantoon()
         
     def __enter_moat(self):
         if self.__in_run and not self.__phantoon_dead:
@@ -111,6 +129,16 @@ class SuperMetroidRunManager():
             if len(self.__phantoon_patterns) < self.__current_phantoon_round:
                 pattern = self.__get_phantoon_pattern(timer)
                 self.__phantoon_patterns.append(pattern)
+                if len(self.__phantoon_patterns) == 1:
+                    if self.__callbacks.enter_phantoon:
+                        self.__callbacks.enter_phantoon()
+
+    def __ceres_timer(self, time, is_final):
+        if self.__ceres_state == SuperMetroidRunManager.CeresState.Escape and is_final and self.__callbacks.ceres_timer:
+            self.__callbacks.ceres_timer(time)
+            self.__sm.unsubscribe_to_memory_update(SuperMetroid.MemoryUpdates.Ceres, self.__ceres_update)
+            self.__ceres_state = SuperMetroidRunManager.CeresState.NotInCeres
+            
 
     ###########################################################################
     # Private helper functions
@@ -123,6 +151,12 @@ class SuperMetroidRunManager():
             
         return 'slow'
             
+    def __ceres_update(self, ceres_data):
+        if self.__ceres_state == SuperMetroidRunManager.CeresState.Intro and ceres_data['ceres_state'] == SuperMetroidRunManager.CeresState.Escape:
+            self.__ceres_state = SuperMetroidRunManager.CeresState.Escape
+            if self.__callbacks.ceres_end:
+                self.__callbacks.ceres_end()
+                
     def __begin_new_run(self):
         # Reset state
         self.__in_run = True
@@ -134,7 +168,11 @@ class SuperMetroidRunManager():
         self.__in_run = True
         
         if self.__callbacks.ceres_timer:
-            self.__sm.enable_memory_update(SuperMetroid.MemoryUpdates.Ceres)
+            self.__sm.subscribe_to_memory_update(SuperMetroid.MemoryUpdates.Ceres, self.__ceres_update)
+        
+        if self.__callbacks.ceres_start and self.__ceres_state is not SuperMetroidRunManager.CeresState.Intro:
+            self.__callbacks.ceres_start()
+            self.__ceres_state = SuperMetroidRunManager.CeresState.Intro
         
         if self.__callbacks.run_started:
             self.__callbacks.run_started()

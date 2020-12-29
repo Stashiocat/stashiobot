@@ -100,6 +100,8 @@ class SuperMetroid():
         EnemyHP     = 2
         SamusHP     = 3
         PhantoonEye = 4
+        CeresTimer  = 5
+        GameState   = 6
         
     class MemoryUpdates():
         Ceres = 0
@@ -113,6 +115,7 @@ class SuperMetroid():
         
         self.__callbacks = dict()
         self.__room_transition_callbacks = []
+        self.__current_subscriptions = []
         
         self.__prev_game_info = None
 
@@ -141,7 +144,7 @@ class SuperMetroid():
             },
             # Allow subscribing to read certain values
             'subscriptions': {
-                'ceres_update': {
+                SuperMetroid.MemoryUpdates.Ceres: {
                     'ceres_timer': { 'offset': 0x945, 'size': 2 },
                     'ceres_state': { 'offset': 0x93F, 'size': 2 },
                 }
@@ -155,6 +158,8 @@ class SuperMetroid():
             SuperMetroid.Callbacks.EnemyHP:     { 'check': self.__check_enemy_hp_change,    'params': lambda info: [info['enemy_hp']], },
             SuperMetroid.Callbacks.SamusHP:     { 'check': self.__check_samus_hp_change,    'params': lambda info: [info['samus_hp']], },
             SuperMetroid.Callbacks.PhantoonEye: { 'check': self.__check_phantoon_eye_timer, 'params': lambda info: [info['phantoon_eye_timer']], },
+            SuperMetroid.Callbacks.CeresTimer:  { 'check': self.__check_ceres_timer,        'params': lambda info: [info['ceres_timer'], info['game_state'] == GameStates.CeresDestroyedCinematic], },
+            SuperMetroid.Callbacks.GameState:   { 'check': self.__check_game_state,         'params': lambda info: [info['game_state']], },
         }
         
     def __del__(self):
@@ -180,12 +185,14 @@ class SuperMetroid():
     def unsubscribe(self, in_type):
         if in_type in self.__callbacks:
             del self.__callbacks[in_type]
-        
-    def enable_memory_update(self, in_type):
-        pass
-        
-    def disable_memory_update(self, in_type):
-        pass
+            
+    def subscribe_to_memory_update(self, in_type, in_callback):
+        if not (in_type, in_callback) in self.__current_subscriptions:
+            self.__current_subscriptions.append((in_type, in_callback))
+            
+    def unsubscribe_to_memory_update(self, in_type, in_callback):
+        if (in_type, in_callback) in self.__current_subscriptions:
+            self.__current_subscriptions.remove((in_type, in_callback))
         
     def subscribe_to_room_transition(self, before, after, in_callback):
         data = {
@@ -208,7 +215,6 @@ class SuperMetroid():
         while self.__shouldTick:
             if self.__retroarch_ready:
                 new_info = self.__read_updated_memory()
-                
                 
                 if self.__prev_game_info:
                     for subscription in self.__callbacks:
@@ -237,7 +243,7 @@ class SuperMetroid():
         return False
         
     def __check_property_change(self, prop, new_info):
-        return prop in self.__prev_game_info and prop in new_info and self.__prev_game_info[prop] != new_info[prop]
+        return prop in new_info and ((prop not in self.__prev_game_info) or self.__prev_game_info[prop] != new_info[prop])
         
     def __check_enemy_hp_change(self, new_info):
         return self.__check_property_change('enemy_hp', new_info)
@@ -245,8 +251,15 @@ class SuperMetroid():
     def __check_samus_hp_change(self, new_info):
         return self.__check_property_change('samus_hp', new_info)
         
+    def __check_game_state(self, new_info):
+        return self.__check_property_change('game_state', new_info)
+        
     def __check_phantoon_eye_timer(self, new_info):
         return self.__check_property_change('phantoon_eye_timer', new_info)
+        
+    def __check_ceres_timer(self, new_info):
+        is_ceres_cinematic = self.__check_game_transition(new_info, GameStates.BlackoutFromCeres, GameStates.CeresDestroyedCinematic)
+        return self.__check_property_change('ceres_timer', new_info) or is_ceres_cinematic
     
     def __check_room_transition(self, new_info, before, after):
         return self.__prev_game_info['room_id'] == before and new_info['room_id'] == after
@@ -282,6 +295,15 @@ class SuperMetroid():
                 assert field not in mem, f"'{field}' already present in __wram_offsets"
                 info = room_info[field]
                 mem[field] = self.__read_mem(info['offset'], info['size'])
+                
+        for sub, sub_callback in self.__current_subscriptions:
+            if sub in self.__wram_offsets['subscriptions']:
+                sub_info = self.__wram_offsets['subscriptions'][sub]
+                cb_mem = {}
+                for mem_name in sub_info:
+                    cb_mem[mem_name] = self.__read_mem(sub_info[mem_name]['offset'], sub_info[mem_name]['size'])
+                    mem[mem_name] = cb_mem[mem_name]
+                sub_callback(cb_mem)
                 
         return mem
         

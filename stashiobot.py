@@ -36,15 +36,20 @@ class Bot(commands.Bot):
                     enter_phantoon     = self.enter_phantoon,
                     enter_moat         = self.enter_moat,
                     phantoon_fight_end = self.phantoon_fight_end,
-                    samus_dead         = None #self.samus_dead
+                    samus_dead         = None,
+                    ceres_start        = self.ceres_start,
+                    ceres_end          = self.ceres_end,
+                    ceres_timer        = self.ceres_timer,
                 )
         self.sm_manager = SuperMetroidRunManager(sm_callbacks)
         self.is_phan_open = False
+        self.is_ceres_open = False
+        self.is_ceres_timer_ready = False
         self.pool_executor = concurrent.futures.ThreadPoolExecutor()
 
     def run_started(self):
         print('Run started')
-        
+            
     def run_reset(self):
         print('Run reset')
         
@@ -64,6 +69,25 @@ class Bot(commands.Bot):
         channel = self.get_channel('stashiocat')
         self.pool_executor.submit(asyncio.run, channel.send(f"!phanend {' '.join(patterns)}"))
     
+    def ceres_start(self):
+        if not self.is_ceres_open:
+            self.is_ceres_open = True
+            channel = self.get_channel('stashiocat')
+            self.pool_executor.submit(asyncio.run, channel.send('!ceresopen'))
+        
+    def ceres_end(self):
+        if self.is_ceres_open:
+            self.is_ceres_open = False
+            self.is_ceres_timer_ready = True
+            channel = self.get_channel('stashiocat')
+            self.pool_executor.submit(asyncio.run, channel.send('!ceresclose'))
+            
+    def ceres_timer(self, time):
+        if self.is_ceres_timer_ready:
+            self.is_ceres_timer_ready = False
+            channel = self.get_channel('stashiocat')
+            self.pool_executor.submit(asyncio.run, channel.send('!ceresend ' + hex(time)[2::]))
+            
     async def event_ready(self):
         print('Connected!')
         await self.pubsub.subscribe_for_channel_rewards()
@@ -78,7 +102,7 @@ class Bot(commands.Bot):
             prefix = await self.get_prefix(message)
             if not prefix:
                 src, dst, msg = self.translator.chat_auto_translate(message)
-                if src and dst and msg:
+                if src and dst and msg and (msg != message.content):
                     await message.channel.send(f'{src} => {dst}: {msg}')
                     return
                  
@@ -99,8 +123,8 @@ class Bot(commands.Bot):
     async def deerforce(self, ctx):
         await ctx.send(' '.join([chr(ord(c) & ~(random.randint(0,1)*32)) for c in "deerforce"]))
 
-# make Ctrl-C actually kill the process
-signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-bot = Bot()
-bot.run()
+if __name__ == '__main__':
+    # make Ctrl-C actually kill the process
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    bot = Bot()
+    bot.run()

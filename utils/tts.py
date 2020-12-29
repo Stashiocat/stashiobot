@@ -2,7 +2,7 @@ import pyttsx3
 import random
 
 class TTS():
-    def __init__(self, volume=0.55):
+    def __init__(self, volume=0.4):
         self.__tts_engine = pyttsx3.init()
         self.__tts_voices = self.__tts_engine.getProperty('voices')
         
