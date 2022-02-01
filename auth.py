@@ -7,6 +7,9 @@ class Auth():
         self.__auth_json = {}
         self.__load_auth()
         
+    def get_user(self):
+        return self.__auth_json['username']
+    
     def get_client_id(self):
         return self.__auth_json['client_id']
         
@@ -46,6 +49,7 @@ class Auth():
         new_access_token = j['access_token']
         new_refresh_token = j['refresh_token']
         self.__assign_new_access_token(new_access_token, new_refresh_token)
+        return new_access_token
         
     ###########################################################################
     # Private helper methods

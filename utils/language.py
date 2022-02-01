@@ -6,12 +6,17 @@ class MessageTranslator():
         
     def chat_auto_translate(self, message):
         fixed_message, emotes = self.__strip_message_for_translate(message)
-        detected = self.__translator.detect(fixed_message)
-        if detected.lang != 'en' and detected.confidence > 0.95:
-            translated = self.__translator.translate(fixed_message)
-            fixed_message = self.__fix_stripped_message(translated.text, emotes)
-            return translated.src, translated.dest, fixed_message
-            
+        detected = None
+
+        try:
+            detected = self.__translator.detect(fixed_message)
+            if detected.lang != 'en' and detected.confidence > 0.90:
+                translated = self.__translator.translate(fixed_message)
+                fixed_message = self.__fix_stripped_message(translated.text, emotes)
+                return translated.src, translated.dest, fixed_message
+        except:
+            return None, None, None
+
         return None, None, None
         
     def __strip_message_for_translate(self, message):

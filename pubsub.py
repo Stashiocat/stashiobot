@@ -1,6 +1,7 @@
 import json
 import requests
 import random
+from twitchio.ext import pubsub
 from enum import Enum
 from utils.jsonparse import JsonParse
 
@@ -15,13 +16,14 @@ class PubSubHandler():
         self.__twitch_bot = twitch_bot
         self.__auth = auth
         self.__channels = channels
+        self.__pubsub = pubsub.PubSubPool(self.__twitch_bot)
         
     ###########################################################################
     # Public facing methods
     ###########################################################################    
-    async def subscribe_for_channel_rewards(self):
-        topics = self.__get_channel_reward_topics(self.__channels)
-        await self.__twitch_bot.pubsub_subscribe(self.__auth.get_access_token(), *topics)
+    async def subscribe_for_channel_rewards(self, auth_token, channel_name):
+        channel_ids = self.__get_channel_ids([channel_name])
+        await self.__pubsub.subscribe_topics([pubsub.channel_points(auth_token)[int(channel_ids[0])]])
         
     async def handle_rewards(self, data, rewards):
         if not 'type' in data:

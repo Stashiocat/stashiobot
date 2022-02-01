@@ -1,7 +1,7 @@
-import threading
 import time
 import collections
-from utils.retroarch import RetroarchReader, ErrorReadingMemoryException
+import asyncio
+from utils.qusb2snes import QUsb2Snes
 
 # Info taken from several places
 # 1. https://jathys.zophar.net/supermetroid/kejardon/
@@ -108,9 +108,7 @@ class SuperMetroid():
         
     def __init__(self):        
         self.__update_game_thread = None
-        self.__hook_retroarch_thread = None
         
-        self.__shouldTick = False
         self.__update_rate = 1.0
         
         self.__callbacks = dict()
@@ -119,15 +117,8 @@ class SuperMetroid():
         
         self.__prev_game_info = None
 
-        self.retroarch_reader = RetroarchReader()
-        self.__retroarch_ready = self.retroarch_reader.open_process()
-        
-        if not self.__retroarch_ready:
-            print('Failed to hook snes9x_libretro.dll in retroarch.exe. Waiting for process.')
-            self.__hook_retroarch_thread = threading.Thread(target=self.__tick_hook_retroarch)
-            self.__hook_retroarch_thread.start()
-        else:
-            print('Retroarch hooked!')
+        self.__qusb2snes = QUsb2Snes('localhost', 8080)
+        self.__qusb2snes_device = None
 
         self.__wram_offsets = {
             'always_update': {
@@ -162,21 +153,53 @@ class SuperMetroid():
             SuperMetroid.Callbacks.GameState:   { 'check': self.__check_game_state,         'params': lambda info: [info['game_state']], },
         }
         
-    def __del__(self):
-        self.retroarch_reader.close_process()
+    async def reconnect_thread(self):
+        while True:
+            if self.__qusb2snes.is_disconnected():
+                await self.__qusb2snes.reconnect_to_device()
+            await asyncio.sleep(1)
+            
+    async def choose_device(self, devices):
+        if len(devices) == 0:
+            return None
+        if len(devices) == 1:
+            return devices[0]
+            
+        for i in range(len(devices)):
+            print(f'{i+1}. {devices[i]}')
+        d = -1
+        while d < 0 or d >= len(devices):
+            i = input('Choose a device number: ')
+            d = int(i) - 1
+            
+        return devices[d]
+    
+    async def main_tick(self):
         
-    def start_game_info_update(self, update_rate=1.0):
-        assert self.__shouldTick == False, "Ticking already started"
-        self.__shouldTick = True
-        self.__update_rate = update_rate
-        self.__update_game_thread = threading.Thread(target=self.__tick_update_game_info)
-        self.__update_game_thread.start()
+        while not self.__qusb2snes_device:
+            await self.__qusb2snes.connect()
+            devices = await self.__qusb2snes.get_devices()
+            devices = devices['Results']
+                
+            d = await self.choose_device(devices)
+            if d:
+                self.__qusb2snes_device = await self.__qusb2snes.attach_to_device(d)
+            else:
+                await asyncio.sleep(1)
         
-    def stop_game_info_update(self):
-        assert self.__shouldTick == True, "Ticking hasn't started yet"
-        self.__shouldTick = False
-        self.__update_game_thread.join()
-        self.__update_game_thread = None
+        print(f'Attached to device {self.__qusb2snes_device.name()}')
+            
+        self.__update_rate = 10.0 / 60.0
+        while True:
+            if self.__qusb2snes_device:
+                await self.__tick_update_game_info()
+                await asyncio.sleep(self.__update_rate)
+            else:
+                await asyncio.sleep(1)
+                
+    def enable_threads(self, loop):
+        loop.create_task(self.main_tick())
+        loop.create_task(self.reconnect_thread())
         
     def subscribe(self, in_type, in_callback):
         if not in_type in self.__callbacks:
@@ -202,42 +225,29 @@ class SuperMetroid():
         }
         self.__room_transition_callbacks.append(data)
         
-    def __tick_hook_retroarch(self):
-        while not self.__retroarch_ready:
-            self.__retroarch_ready = self.retroarch_reader.open_process()
-            
-            #try every second or so
-            time.sleep(1.0)
-        print('Connection to Super Metroid restored.')
-        self.__hook_retroarch_thread = None
+    async def __tick_update_game_info(self):
+        new_info = await self.__read_updated_memory()
         
-    def __tick_update_game_info(self):
-        while self.__shouldTick:
-            if self.__retroarch_ready:
-                new_info = self.__read_updated_memory()
-                
-                if self.__prev_game_info:
-                    for subscription in self.__callbacks:
-                        if self.__callbacks[subscription]:
-                            ci = self.__callback_info[subscription]
-                            if ci['check'](new_info):
-                                self.__callbacks[subscription](*ci['params'](new_info))
-                
-                    for transition in self.__room_transition_callbacks:
-                        if self.__check_room_transition(new_info, transition['from'], transition['to']):
-                            transition['callback']()
+        if self.__prev_game_info:
+            for subscription in self.__callbacks:
+                if self.__callbacks[subscription]:
+                    ci = self.__callback_info[subscription]
+                    if ci['check'](new_info):
+                        await self.__callbacks[subscription](*ci['params'](new_info))
+        
+            for transition in self.__room_transition_callbacks:
+                if self.__check_room_transition(new_info, transition['from'], transition['to']):
+                    await transition['callback']()
 
-                # set this as our prev info now for next frame
-                self.__prev_game_info = new_info
-            
-            time.sleep(self.__update_rate)
+        # set this as our prev info now for next frame
+        self.__prev_game_info = new_info
             
     def __is_new_run_started(self, new_info):
         return self.__check_game_transition(new_info, GameStates.GameOptionsMenu, GameStates.NewGamePostIntro)
         
     def __is_run_reset(self, new_info):
-        if self.__prev_game_info['room_id'] != Rooms.Empty:
-            if new_info['room_id'] == Rooms.Empty:
+        if 'room_id' in self.__prev_game_info and self.__prev_game_info['room_id'] != Rooms.Empty:
+            if 'room_id' in new_info and new_info['room_id'] == Rooms.Empty:
                 return GameStates.is_demo_state(self.__prev_game_info['game_state']) == False
                     
         return False
@@ -265,45 +275,54 @@ class SuperMetroid():
         return self.__prev_game_info['room_id'] == before and new_info['room_id'] == after
         
     def __check_game_transition(self, new_info, before, after):
-        return self.__prev_game_info['game_state'] == before and new_info['game_state'] == after
+        keys_valid = 'game_state' in self.__prev_game_info and 'game_state' in new_info
+        return keys_valid and self.__prev_game_info['game_state'] == before and new_info['game_state'] == after
     
-    def __read_mem(self, addr, size):
-        try:
-            return self.retroarch_reader.read_memory(addr, size)
-        except ErrorReadingMemoryException:
-            if not self.__hook_retroarch_thread:
-                self.__retroarch_ready = False
-                print('Lost connection to Super Metroid. Attempting reconnection.')
-                self.__hook_retroarch_thread = threading.Thread(target=self.__tick_hook_retroarch)
-                self.__hook_retroarch_thread.start()
-                
-        return None
+    async def __read_mem(self, addr, size):
+        return await self.__qusb2snes_device.read_wram(addr, size)
         
-    def __read_updated_memory(self):
+    async def __read_mem_batch(self, addr_and_sizes):
+        return await self.__qusb2snes_device.read_wram_batch(addr_and_sizes)
+        
+    async def __read_updated_memory(self):
         mem = dict()
+        all_reads = []
+        names = []
+        
         for field in self.__wram_offsets['always_update']:
             assert field not in mem, f"'{field}' already present in __wram_offsets"
             info = self.__wram_offsets['always_update'][field]
-            mem[field] = self.__read_mem(info['offset'], info['size'])
-            
-        assert 'room_id' in mem, "'room_id' must be present under 'always_update' in __wram_offsets!"
+            names.append(field)
+            all_reads.append((info['offset'], info['size']))
         
         # Check if there's any addresses we want to read if we're in this specific room
-        if mem['room_id'] in self.__wram_offsets['room_update']:
-            room_info = self.__wram_offsets['room_update'][mem['room_id']]
+        if self.__prev_game_info and self.__prev_game_info['room_id'] in self.__wram_offsets['room_update']:
+            room_info = self.__wram_offsets['room_update'][self.__prev_game_info['room_id']]
             for field in room_info:
                 assert field not in mem, f"'{field}' already present in __wram_offsets"
                 info = room_info[field]
-                mem[field] = self.__read_mem(info['offset'], info['size'])
+                names.append(field)
+                all_reads.append((info['offset'], info['size']))
                 
         for sub, sub_callback in self.__current_subscriptions:
             if sub in self.__wram_offsets['subscriptions']:
                 sub_info = self.__wram_offsets['subscriptions'][sub]
                 cb_mem = {}
                 for mem_name in sub_info:
-                    cb_mem[mem_name] = self.__read_mem(sub_info[mem_name]['offset'], sub_info[mem_name]['size'])
-                    mem[mem_name] = cb_mem[mem_name]
-                sub_callback(cb_mem)
+                    names.append(mem_name)
+                    all_reads.append((sub_info[mem_name]['offset'], sub_info[mem_name]['size']))
                 
+        results = await self.__read_mem_batch(all_reads)
+        if len(results) == len(names):
+            for i in range(len(names)):
+                mem[names[i]] = results[i]
+        
+            # now do callbacks
+            for sub, sub_callback in self.__current_subscriptions:
+                if sub in self.__wram_offsets['subscriptions']:
+                    await sub_callback(mem)
+        else:
+            for n in names:
+                mem[n] = None
         return mem
         
